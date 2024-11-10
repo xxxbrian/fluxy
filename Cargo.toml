@@ -1,0 +1,18 @@
+[package]
+name = "fluxy"
+version = "0.1.0"
+edition = "2021"
+description = "An HTTP proxy that uses random IP addresses from a pool"
+
+[dependencies]
+cidr = "0.2"
+getopts = "0.2"
+hyper = { version = "0.14", features = ["client", "server", "http1", "runtime"] }
+tokio = { version = "1", features = ["net", "rt-multi-thread", "macros", "io-util"] }
+rand = "0.8"
+
+[profile.release]
+strip = true
+lto = true
+opt-level = "s"
+codegen-units = 1
