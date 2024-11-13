@@ -54,7 +54,7 @@ async fn run(bind_addr: String, ipv6_subnet: Option<String>, ipv4_subnet: Option
     if let Some(subnet) = ipv6_subnet {
         match subnet.parse::<Ipv6Cidr>() {
             Ok(cidr) => {
-                config.ipv6 = Some((cidr.first_address().into(), cidr.network_length()));
+                config.ipv6 = Some(cidr);
             }
             Err(_) => {
                 println!("Invalid IPv6 subnet");
@@ -66,7 +66,7 @@ async fn run(bind_addr: String, ipv6_subnet: Option<String>, ipv4_subnet: Option
     if let Some(subnet) = ipv4_subnet {
         match subnet.parse::<Ipv4Cidr>() {
             Ok(cidr) => {
-                config.ipv4 = Some((cidr.first_address().into(), cidr.network_length()));
+                config.ipv4 = Some(cidr);
             }
             Err(_) => {
                 println!("Invalid IPv4 subnet");

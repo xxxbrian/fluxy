@@ -1,4 +1,5 @@
 // proxy.rs
+use cidr::{Ipv4Cidr, Ipv6Cidr};
 use hyper::{
     client::HttpConnector,
     server::conn::AddrStream,
@@ -14,8 +15,8 @@ use tokio::{
 
 #[derive(Clone, Default)]
 pub struct ProxyConfig {
-    pub ipv6: Option<(u128, u8)>,
-    pub ipv4: Option<(u32, u8)>,
+    pub ipv6: Option<Ipv6Cidr>,
+    pub ipv4: Option<Ipv4Cidr>,
 }
 
 pub async fn start_proxy(
@@ -109,11 +110,11 @@ impl Proxy {
     fn get_rand_ip(&self) -> IpAddr {
         let mut rng = rand::thread_rng();
         if rng.gen_bool(0.5) && self.config.ipv6.is_some() {
-            self.get_rand_ipv6()
+            IpAddr::V6(self.get_rand_ipv6())
         } else if self.config.ipv4.is_some() {
-            self.get_rand_ipv4()
+            IpAddr::V4(self.get_rand_ipv4())
         } else {
-            self.get_rand_ipv6() // Fallback to IPv6 if IPv4 is not configured
+            IpAddr::V6(self.get_rand_ipv6()) // Fallback to IPv6 if IPv4 is not configured
         }
     }
 
@@ -123,27 +124,27 @@ impl Proxy {
         SocketAddr::new(ip, port)
     }
 
-    fn get_rand_ipv6(&self) -> IpAddr {
-        if let Some((ipv6, prefix_len)) = self.config.ipv6 {
-            let mut rng = rand::thread_rng();
-            let rand: u128 = rng.gen();
-            let net_part = (ipv6 >> (128 - prefix_len)) << (128 - prefix_len);
-            let host_part = (rand << prefix_len) >> prefix_len;
-            let ipv6 = net_part | host_part;
-            IpAddr::V6(Ipv6Addr::from(ipv6))
+    fn get_rand_ipv6(&self) -> Ipv6Addr {
+        if let Some(ipv6_cidr) = self.config.ipv6 {
+            let len = ipv6_cidr.network_length();
+            ipv6_cidr
+                .iter()
+                .nth(rand::thread_rng().gen_range(0..len.into()))
+                .unwrap()
+                .address()
         } else {
             panic!("IPv6 subnet not configured")
         }
     }
 
-    fn get_rand_ipv4(&self) -> IpAddr {
-        if let Some((ipv4, prefix_len)) = self.config.ipv4 {
-            let mut rng = rand::thread_rng();
-            let rand: u32 = rng.gen();
-            let net_part = (ipv4 >> (32 - prefix_len)) << (32 - prefix_len);
-            let host_part = (rand << prefix_len) >> prefix_len;
-            let ipv4 = net_part | host_part;
-            IpAddr::V4(Ipv4Addr::from(ipv4))
+    fn get_rand_ipv4(&self) -> Ipv4Addr {
+        if let Some(ipv4_cidr) = self.config.ipv4 {
+            let len = ipv4_cidr.network_length();
+            ipv4_cidr
+                .iter()
+                .nth(rand::thread_rng().gen_range(0..len.into()))
+                .unwrap()
+                .address()
         } else {
             panic!("IPv4 subnet not configured")
         }
