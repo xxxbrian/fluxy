@@ -2,6 +2,10 @@
 name = "fluxy"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+keywords = ["proxy", "http", "pool"]
+categories = ["command-line-utilities"]
+repository = "https://github.com/xxxbrian/fluxy"
 description = "An HTTP proxy that uses random IP addresses from a pool"
 
 [dependencies]
