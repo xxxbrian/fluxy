@@ -129,7 +129,7 @@ impl Proxy {
             let len = ipv6_cidr.network_length();
             ipv6_cidr
                 .iter()
-                .nth(rand::thread_rng().gen_range(0..len.into()))
+                .nth(rand::thread_rng().gen_range(0..(1 << (128 - len))))
                 .unwrap()
                 .address()
         } else {
@@ -142,7 +142,7 @@ impl Proxy {
             let len = ipv4_cidr.network_length();
             ipv4_cidr
                 .iter()
-                .nth(rand::thread_rng().gen_range(0..len.into()))
+                .nth(rand::thread_rng().gen_range(0..(1 << (32 - len))))
                 .unwrap()
                 .address()
         } else {
