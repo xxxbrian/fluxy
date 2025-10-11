@@ -23,6 +23,14 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            build_tool: ""
+          - target: aarch64-unknown-linux-gnu
+            build_tool: cross
     env:
       RELEASE_TAG: ${{ inputs.tag != '' && inputs.tag || github.ref_name }}
     steps:
@@ -30,14 +38,15 @@ jobs:
         with:
           ref: ${{ inputs.tag != '' && format('refs/tags/{0}', inputs.tag) || '' }}
       - uses: dtolnay/rust-toolchain@stable
-      - uses: taiki-e/install-action@v2
+      - if: ${{ matrix.build_tool == 'cross' }}
+        uses: taiki-e/install-action@v2
         with:
           tool: cross
       - uses: taiki-e/upload-rust-binary-action@v1
         with:
           bin: fluxy
-          target: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
-          build-tool: cross
+          target: ${{ matrix.target }}
+          build-tool: ${{ matrix.build_tool }}
           tar: unix
           checksum: sha256
           ref: refs/tags/${{ env.RELEASE_TAG }}
@@ -48,6 +57,10 @@ jobs:
     runs-on: macos-14
     permissions:
       contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [ aarch64-apple-darwin, x86_64-apple-darwin ]
     env:
       RELEASE_TAG: ${{ inputs.tag != '' && inputs.tag || github.ref_name }}
     steps:
@@ -59,7 +72,7 @@ jobs:
       - uses: taiki-e/upload-rust-binary-action@v1
         with:
           bin: fluxy
-          target: aarch64-apple-darwin,x86_64-apple-darwin
+          target: ${{ matrix.target }}
           tar: unix
           checksum: sha256
           ref: refs/tags/${{ env.RELEASE_TAG }}
