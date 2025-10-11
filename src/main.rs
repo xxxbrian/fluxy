@@ -30,6 +30,7 @@ fn main() {
         "IPv4_SUBNET",
     );
     opts.optflag("h", "help", "print this help menu");
+    opts.optflag("v", "version", "print version information");
     let matches = match opts.parse(&args[1..]) {
         Ok(m) => m,
         Err(f) => {
@@ -38,6 +39,11 @@ fn main() {
     };
     if matches.opt_present("h") {
         print_usage(&program, opts);
+        return;
+    }
+    
+    if matches.opt_present("v") {
+        println!("{} version {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
         return;
     }
 
