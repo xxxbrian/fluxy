@@ -4,7 +4,7 @@ use cidr::{Ipv4Cidr, Ipv6Cidr};
 use http_body_util::{Either, Empty};
 use hyper::{
     body::Incoming, client::conn::http1 as client_http1, server::conn::http1 as server_http1,
-    service::service_fn, Method, Request, Response,
+    service::service_fn, Method, Request, Response, StatusCode,
 };
 use hyper_util::rt::TokioIo;
 use std::{
@@ -122,13 +122,25 @@ impl Proxy {
     }
 
     async fn process_connect(self, req: Request<Incoming>) -> ProxyResult<Response<ProxyBody>> {
+        let remote_addr = match req.uri().authority().map(|auth| auth.to_string()) {
+            Some(addr) => addr,
+            None => {
+                let mut response = Response::new(Either::Left(Empty::<Bytes>::new()));
+                *response.status_mut() = StatusCode::BAD_REQUEST;
+                return Ok(response);
+            }
+        };
+
         tokio::task::spawn(async move {
             let proxy = self;
-            let remote_addr = req.uri().authority().map(|auth| auth.to_string()).unwrap();
-            let upgraded = hyper::upgrade::on(req).await.unwrap();
-            let mut upgraded = TokioIo::new(upgraded);
-            if let Err(err) = proxy.tunnel(&mut upgraded, remote_addr).await {
-                proxy.log_verbose(&format!("tunnel error: {err}"));
+            match hyper::upgrade::on(req).await {
+                Ok(upgraded) => {
+                    let mut upgraded = TokioIo::new(upgraded);
+                    if let Err(err) = proxy.tunnel(&mut upgraded, remote_addr).await {
+                        proxy.log_verbose(&format!("tunnel error: {err}"));
+                    }
+                }
+                Err(err) => proxy.log_verbose(&format!("upgrade error: {err}")),
             }
         });
         Ok(Response::new(Either::Left(Empty::<Bytes>::new())))
