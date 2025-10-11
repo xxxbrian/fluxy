@@ -31,6 +31,7 @@ fn main() {
     );
     opts.optflag("h", "help", "print this help menu");
     opts.optflag("v", "version", "print version information");
+    opts.optflag("", "verbose", "enable verbose logging");
     let matches = match opts.parse(&args[1..]) {
         Ok(m) => m,
         Err(f) => {
@@ -54,12 +55,20 @@ fn main() {
     let bind_addr = matches.opt_str("b").unwrap_or("0.0.0.0:51080".to_string());
     let ipv6_subnet = matches.opt_str("6");
     let ipv4_subnet = matches.opt_str("4");
-    run(bind_addr, ipv6_subnet, ipv4_subnet)
+    let verbose = matches.opt_present("verbose");
+    run(bind_addr, ipv6_subnet, ipv4_subnet, verbose)
 }
 
 #[tokio::main]
-async fn run(bind_addr: String, ipv6_subnet: Option<String>, ipv4_subnet: Option<String>) {
+async fn run(
+    bind_addr: String,
+    ipv6_subnet: Option<String>,
+    ipv4_subnet: Option<String>,
+    verbose: bool,
+) {
     let mut config = ProxyConfig::default();
+
+    config.verbose = verbose;
 
     if let Some(subnet) = ipv6_subnet {
         match subnet.parse::<Ipv6Cidr>() {

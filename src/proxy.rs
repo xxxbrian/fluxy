@@ -71,6 +71,7 @@ impl From<&'static str> for ProxyError {
 pub struct ProxyConfig {
     pub ipv6: Option<Ipv6Cidr>,
     pub ipv4: Option<Ipv4Cidr>,
+    pub verbose: bool,
 }
 
 pub async fn start_proxy(
@@ -87,9 +88,10 @@ pub async fn start_proxy(
             let proxy = Proxy {
                 config: config_clone,
             };
+            let proxy_for_service = proxy.clone();
             let io = TokioIo::new(stream);
             let service = service_fn(move |req| {
-                let proxy = proxy.clone();
+                let proxy = proxy_for_service.clone();
                 async move { proxy.proxy(req).await }
             });
 
@@ -100,7 +102,7 @@ pub async fn start_proxy(
                 .with_upgrades()
                 .await
             {
-                eprintln!("connection error: {err}");
+                proxy.log_verbose(&format!("connection error: {err}"));
             }
         });
     }
@@ -122,11 +124,12 @@ impl Proxy {
 
     async fn process_connect(self, req: Request<Incoming>) -> ProxyResult<Response<ProxyBody>> {
         tokio::task::spawn(async move {
+            let proxy = self;
             let remote_addr = req.uri().authority().map(|auth| auth.to_string()).unwrap();
             let upgraded = hyper::upgrade::on(req).await.unwrap();
             let mut upgraded = TokioIo::new(upgraded);
-            if let Err(err) = self.tunnel(&mut upgraded, remote_addr).await {
-                eprintln!("tunnel error: {err}");
+            if let Err(err) = proxy.tunnel(&mut upgraded, remote_addr).await {
+                proxy.log_verbose(&format!("tunnel error: {err}"));
             }
         });
         Ok(Response::new(Either::Left(Empty::<Bytes>::new())))
@@ -148,9 +151,9 @@ impl Proxy {
 
         let stream = self.connect_to_host(&host, port).await?;
         if let Ok(addr) = stream.local_addr() {
-            println!("{} via {}", host, addr.ip());
+            self.log_verbose(&format!("{} via {}", host, addr.ip()));
         } else {
-            println!("{host} via <unknown>");
+            self.log_verbose(&format!("{host} via <unknown>"));
         }
 
         let io = TokioIo::new(stream);
@@ -160,9 +163,10 @@ impl Proxy {
             .handshake(io)
             .await?;
 
+        let proxy_clone = self.clone();
         tokio::task::spawn(async move {
             if let Err(err) = connection.without_shutdown().await {
-                eprintln!("upstream connection error: {err}");
+                proxy_clone.log_verbose(&format!("upstream connection error: {err}"));
             }
         });
 
@@ -171,7 +175,7 @@ impl Proxy {
         Ok(Response::from_parts(parts, Either::Right(body)))
     }
 
-    async fn tunnel<A>(self, upgraded: &mut A, addr_str: String) -> io::Result<()>
+    async fn tunnel<A>(&self, upgraded: &mut A, addr_str: String) -> io::Result<()>
     where
         A: AsyncRead + AsyncWrite + Unpin + ?Sized,
     {
@@ -186,7 +190,7 @@ impl Proxy {
                     None => continue,
                 };
                 if socket.bind(bind_addr).is_ok() {
-                    println!("{addr_str} via {bind_addr}");
+                    self.log_verbose(&format!("{addr_str} via {bind_addr}"));
                     if let Ok(mut server) = socket.connect(addr).await {
                         tokio::io::copy_bidirectional(upgraded, &mut server).await?;
                         return Ok(());
@@ -194,7 +198,7 @@ impl Proxy {
                 }
             }
         } else {
-            println!("error: {addr_str}");
+            self.log_verbose(&format!("error: {addr_str}"));
         }
 
         Ok(())
@@ -288,6 +292,12 @@ impl Proxy {
                 .address()
         } else {
             panic!("IPv4 subnet not configured")
+        }
+    }
+
+    fn log_verbose(&self, message: &str) {
+        if self.config.verbose {
+            eprintln!("{message}");
         }
     }
 }
