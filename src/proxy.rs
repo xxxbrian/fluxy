@@ -1,7 +1,7 @@
 // proxy.rs
 use bytes::Bytes;
 use cidr::{Ipv4Cidr, Ipv6Cidr};
-use http_body_util::{combinators::BoxBody, BodyExt, Empty};
+use http_body_util::{Either, Empty};
 use hyper::{
     body::Incoming, client::conn::http1 as client_http1, server::conn::http1 as server_http1,
     service::service_fn, Method, Request, Response,
@@ -20,13 +20,7 @@ use tokio::{
 };
 
 type ProxyResult<T> = Result<T, ProxyError>;
-type ProxyBody = BoxBody<Bytes, hyper::Error>;
-
-fn empty_body() -> ProxyBody {
-    Empty::<Bytes>::new()
-        .map_err(|never| match never {})
-        .boxed()
-}
+type ProxyBody = Either<Empty<Bytes>, Incoming>;
 
 #[derive(Debug)]
 enum ProxyError {
@@ -135,7 +129,7 @@ impl Proxy {
                 eprintln!("tunnel error: {err}");
             }
         });
-        Ok(Response::new(empty_body()))
+        Ok(Response::new(Either::Left(Empty::<Bytes>::new())))
     }
 
     async fn process_request(self, req: Request<Incoming>) -> ProxyResult<Response<ProxyBody>> {
@@ -174,8 +168,7 @@ impl Proxy {
 
         let res = sender.send_request(req).await?;
         let (parts, body) = res.into_parts();
-        let body = body.map_err(|err| err).boxed();
-        Ok(Response::from_parts(parts, body))
+        Ok(Response::from_parts(parts, Either::Right(body)))
     }
 
     async fn tunnel<A>(self, upgraded: &mut A, addr_str: String) -> io::Result<()>
