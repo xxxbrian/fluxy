@@ -41,9 +41,13 @@ fn main() {
         print_usage(&program, opts);
         return;
     }
-    
+
     if matches.opt_present("v") {
-        println!("{} version {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+        println!(
+            "{} version {}",
+            env!("CARGO_PKG_NAME"),
+            env!("CARGO_PKG_VERSION")
+        );
         return;
     }
 
