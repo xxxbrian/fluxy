@@ -20,3 +20,9 @@ Define an IPv6 subnet in CIDR notation (e.g., 2001:db8::/32).
 
 `-h, --help`
 Display the help menu.
+
+`-v, --version`
+Print the current build version.
+
+`--verbose`
+Print basic per-request diagnostics. Disabled by default.
