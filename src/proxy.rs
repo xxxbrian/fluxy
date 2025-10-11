@@ -258,18 +258,17 @@ impl Proxy {
     }
 
     fn get_rand_socket_addr_for(&self, remote: &SocketAddr) -> Option<SocketAddr> {
-        let port = rand::thread_rng().gen::<u16>();
         match remote {
             SocketAddr::V4(_) => self
                 .config
                 .ipv4
                 .as_ref()
-                .map(|_| SocketAddr::new(IpAddr::V4(self.get_rand_ipv4()), port)),
+                .map(|_| SocketAddr::new(IpAddr::V4(self.get_rand_ipv4()), 0)),
             SocketAddr::V6(_) => self
                 .config
                 .ipv6
                 .as_ref()
-                .map(|_| SocketAddr::new(IpAddr::V6(self.get_rand_ipv6()), port)),
+                .map(|_| SocketAddr::new(IpAddr::V6(self.get_rand_ipv6()), 0)),
         }
     }
 
