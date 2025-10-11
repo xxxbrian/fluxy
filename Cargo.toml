@@ -16,7 +16,12 @@ tokio = { version = "1", features = ["net", "rt-multi-thread", "macros", "io-uti
 rand = "0.8"
 
 [profile.release]
-strip = true
-lto = true
-opt-level = "s"
+strip = "symbols"
+lto = "fat"
+opt-level = 3
 codegen-units = 1
+overflow-checks = false
+panic = "abort"
+incremental = false
+debug = false
+rpath = false
