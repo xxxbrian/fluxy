@@ -66,9 +66,10 @@ async fn run(
     ipv4_subnet: Option<String>,
     verbose: bool,
 ) {
-    let mut config = ProxyConfig::default();
-
-    config.verbose = verbose;
+    let mut config = ProxyConfig {
+        verbose,
+        ..ProxyConfig::default()
+    };
 
     if let Some(subnet) = ipv6_subnet {
         match subnet.parse::<Ipv6Cidr>() {
