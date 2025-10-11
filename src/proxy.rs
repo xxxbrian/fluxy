@@ -7,7 +7,6 @@ use hyper::{
     service::service_fn, Method, Request, Response,
 };
 use hyper_util::rt::TokioIo;
-use rand::Rng;
 use std::{
     error::Error as StdError,
     fmt,
@@ -269,12 +268,10 @@ impl Proxy {
 
     fn get_rand_ipv6(&self) -> Ipv6Addr {
         if let Some(ipv6_cidr) = self.config.ipv6 {
-            let len = ipv6_cidr.network_length();
-            ipv6_cidr
-                .iter()
-                .nth(rand::thread_rng().gen_range(0..(1 << (128 - len))))
-                .unwrap()
-                .address()
+            let host_bits = 128u32 - u32::from(ipv6_cidr.network_length());
+            let base = u128::from(ipv6_cidr.first_address());
+            let offset = random_host_offset_u128(host_bits);
+            Ipv6Addr::from(base | offset)
         } else {
             panic!("IPv6 subnet not configured")
         }
@@ -282,12 +279,10 @@ impl Proxy {
 
     fn get_rand_ipv4(&self) -> Ipv4Addr {
         if let Some(ipv4_cidr) = self.config.ipv4 {
-            let len = ipv4_cidr.network_length();
-            ipv4_cidr
-                .iter()
-                .nth(rand::thread_rng().gen_range(0..(1 << (32 - len))))
-                .unwrap()
-                .address()
+            let host_bits = 32u32 - u32::from(ipv4_cidr.network_length());
+            let base = u32::from(ipv4_cidr.first_address());
+            let offset = random_host_offset_u32(host_bits);
+            Ipv4Addr::from(base | offset)
         } else {
             panic!("IPv4 subnet not configured")
         }
@@ -298,4 +293,32 @@ impl Proxy {
             eprintln!("{message}");
         }
     }
+}
+
+fn random_host_offset_u32(bits: u32) -> u32 {
+    match bits {
+        0 => 0,
+        32 => fastrand::u32(..=u32::MAX),
+        b => {
+            let mask = (1u32 << b) - 1;
+            fastrand::u32(0..=mask)
+        }
+    }
+}
+
+fn random_host_offset_u128(bits: u32) -> u128 {
+    match bits {
+        0 => 0,
+        b if b >= 128 => random_u128(),
+        b => {
+            let mask = (1u128 << b) - 1;
+            random_u128() & mask
+        }
+    }
+}
+
+fn random_u128() -> u128 {
+    let high = fastrand::u64(..=u64::MAX) as u128;
+    let low = fastrand::u64(..=u64::MAX) as u128;
+    (high << 64) | low
 }
