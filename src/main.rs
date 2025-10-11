@@ -35,7 +35,9 @@ fn main() {
     let matches = match opts.parse(&args[1..]) {
         Ok(m) => m,
         Err(f) => {
-            panic!("{}", f.to_string())
+            eprintln!("{}: {}", program, f);
+            print_usage(&program, opts);
+            return;
         }
     };
     if matches.opt_present("h") {
