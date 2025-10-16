@@ -3,10 +3,10 @@ mod proxy;
 
 use cidr::{Ipv4Cidr, Ipv6Cidr};
 use getopts::Options;
-use proxy::{start_proxy, ProxyConfig};
-use std::{env, process::exit};
+use proxy::{start_http_proxy, start_socks_proxy, OutboundConnector, ProxyConfig};
+use std::{env, net::SocketAddr, process::exit};
 
-fn print_usage(program: &str, opts: Options) {
+fn print_usage(program: &str, opts: &Options) {
     let brief = format!("Usage: {} [options]", program);
     print!("{}", opts.usage(&brief));
 }
@@ -16,7 +16,8 @@ fn main() {
     let program = args[0].clone();
 
     let mut opts = Options::new();
-    opts.optopt("b", "bind", "http proxy bind address", "BIND");
+    opts.optopt("H", "http-bind", "HTTP proxy bind address", "HTTP_BIND");
+    opts.optopt("S", "socks-bind", "SOCKS5 proxy bind address", "SOCKS_BIND");
     opts.optopt(
         "6",
         "ipv6-subnet",
@@ -36,12 +37,12 @@ fn main() {
         Ok(m) => m,
         Err(f) => {
             eprintln!("{}: {}", program, f);
-            print_usage(&program, opts);
+            print_usage(&program, &opts);
             return;
         }
     };
     if matches.opt_present("h") {
-        print_usage(&program, opts);
+        print_usage(&program, &opts);
         return;
     }
 
@@ -54,20 +55,38 @@ fn main() {
         return;
     }
 
-    let bind_addr = matches.opt_str("b").unwrap_or("0.0.0.0:51080".to_string());
+    let http_bind = matches
+        .opt_str("http-bind")
+        .or_else(|| matches.opt_str("H"));
+    let socks_bind = matches
+        .opt_str("socks-bind")
+        .or_else(|| matches.opt_str("S"));
+
+    if http_bind.is_none() && socks_bind.is_none() {
+        eprintln!("At least one of --http-bind/-H or --socks-bind/-S must be provided.");
+        print_usage(&program, &opts);
+        return;
+    }
+
     let ipv6_subnet = matches.opt_str("6");
     let ipv4_subnet = matches.opt_str("4");
     let verbose = matches.opt_present("verbose");
-    run(bind_addr, ipv6_subnet, ipv4_subnet, verbose)
+    run(http_bind, socks_bind, ipv6_subnet, ipv4_subnet, verbose)
 }
 
 #[tokio::main]
 async fn run(
-    bind_addr: String,
+    http_bind: Option<String>,
+    socks_bind: Option<String>,
     ipv6_subnet: Option<String>,
     ipv4_subnet: Option<String>,
     verbose: bool,
 ) {
+    if http_bind.is_none() && socks_bind.is_none() {
+        eprintln!("No services enabled. Provide --http-bind/-H and/or --socks-bind/-S.");
+        return;
+    }
+
     let mut config = ProxyConfig {
         verbose,
         ..ProxyConfig::default()
@@ -97,15 +116,63 @@ async fn run(
         }
     }
 
-    let bind_addr = match bind_addr.parse() {
-        Ok(b) => b,
-        Err(e) => {
-            println!("Bind address not valid: {}", e);
-            return;
-        }
+    let http_addr = match http_bind {
+        Some(bind) => match bind.parse::<SocketAddr>() {
+            Ok(addr) => Some(addr),
+            Err(e) => {
+                println!("HTTP bind address not valid: {}", e);
+                return;
+            }
+        },
+        None => None,
     };
 
-    if let Err(e) = start_proxy(bind_addr, config).await {
-        println!("{}", e);
+    let socks_addr = match socks_bind {
+        Some(bind) => match bind.parse::<SocketAddr>() {
+            Ok(addr) => Some(addr),
+            Err(e) => {
+                println!("SOCKS bind address not valid: {}", e);
+                return;
+            }
+        },
+        None => None,
+    };
+
+    let connector = OutboundConnector::new(config);
+
+    type AnyError = Box<dyn std::error::Error + Send + Sync>;
+
+    match (http_addr, socks_addr) {
+        (Some(http_addr), Some(socks_addr)) => {
+            let http_connector = connector.clone();
+            let socks_connector = connector;
+
+            let http_future = async move {
+                start_http_proxy(http_addr, http_connector)
+                    .await
+                    .map_err(|err| -> AnyError { Box::new(err) })
+            };
+
+            let socks_future = async move {
+                start_socks_proxy(socks_addr, socks_connector)
+                    .await
+                    .map_err(|err| -> AnyError { Box::new(err) })
+            };
+
+            if let Err(err) = tokio::try_join!(http_future, socks_future) {
+                eprintln!("{err}");
+            }
+        }
+        (Some(http_addr), None) => {
+            if let Err(err) = start_http_proxy(http_addr, connector).await {
+                eprintln!("{err}");
+            }
+        }
+        (None, Some(socks_addr)) => {
+            if let Err(err) = start_socks_proxy(socks_addr, connector).await {
+                eprintln!("{err}");
+            }
+        }
+        (None, None) => unreachable!(),
     }
 }
