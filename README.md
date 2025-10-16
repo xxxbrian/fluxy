@@ -1,4 +1,4 @@
-# An HTTP proxy
+# An HTTP & SOCKS proxy
 
 [<img alt="github" src="https://img.shields.io/badge/github-xxxbrian%2Ffluxy-8da0cb?style=for-the-badge&logo=github" height="24">
 ](https://github.com/xxxbrian/fluxy)
@@ -9,8 +9,11 @@
 
 **Command-Line Options**
 
-`-b, --bind BIND`
-Specify the HTTP proxy bind address (default 0.0.0.0:51080).
+`-H, --http-bind HTTP_BIND`
+Bind the HTTP proxy on the provided address.
+
+`-S, --socks-bind SOCKS_BIND`
+Bind the SOCKS5 proxy on the provided address.
 
 `-4, --ipv4-subnet IPV4_SUBNET`
 Define an IPv4 subnet in CIDR notation (e.g., 192.168.0.0/24).
@@ -26,3 +29,5 @@ Print the current build version.
 
 `--verbose`
 Print basic per-request diagnostics. Disabled by default.
+
+At least one of `--http-bind`/`-H` or `--socks-bind`/`-S` must be provided.
