@@ -1,9 +1,10 @@
 use bytes::Bytes;
 use cidr::{Ipv4Cidr, Ipv6Cidr};
 use fast_socks5::{
+    new_udp_header, parse_udp_request,
     server::{
-        run_udp_proxy, states, transfer, DnsResolveHelper as _, Socks5ServerProtocol,
-        SocksServerError,
+        run_udp_proxy_custom, states, transfer, DnsResolveHelper as _, ErrorContext,
+        Socks5ServerProtocol, SocksServerError,
     },
     ReplyError, Socks5Command,
 };
@@ -13,6 +14,7 @@ use hyper::{
     service::service_fn, Method, Request, Response, StatusCode,
 };
 use hyper_util::rt::TokioIo;
+use socket2::{Domain, Socket, Type};
 use std::{
     error::Error as StdError,
     fmt,
@@ -21,7 +23,7 @@ use std::{
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
-    net::{TcpListener, TcpSocket, TcpStream},
+    net::{TcpListener, TcpSocket, TcpStream, UdpSocket},
 };
 use tracing::Instrument;
 
@@ -529,12 +531,23 @@ mod socks {
             outbound_ip
         );
 
-        run_udp_proxy(
+        run_udp_proxy_custom(
             proto,
             &resolved_target,
             Some(reply_ip),
             reply_ip,
-            Some(outbound_ip),
+            move |inbound| async move {
+                let bind_addr = SocketAddr::new(outbound_ip, 0);
+                let socket = Socket::new(Domain::for_address(bind_addr), Type::DGRAM, None)
+                    .err_when("creating outbound udp socket")?;
+                socket
+                    .bind(&bind_addr.into())
+                    .err_when("binding outbound udp socket")?;
+                socket
+                    .set_nonblocking(true)
+                    .err_when("configuring outbound udp socket")?;
+                transfer_udp_with_logging(inbound, socket).await
+            },
         )
         .await?;
         Ok(())
@@ -588,6 +601,102 @@ mod socks {
             | ErrorKind::AddrNotAvailable
             | ErrorKind::NetworkUnreachable => ReplyError::NetworkUnreachable,
             _ => ReplyError::GeneralFailure,
+        }
+    }
+
+    async fn transfer_udp_with_logging(
+        inbound: Socket,
+        outbound: Socket,
+    ) -> Result<(), SocksServerError> {
+        let inbound = UdpSocket::from_std(inbound.into()).err_when("wrapping inbound socket")?;
+        let outbound = UdpSocket::from_std(outbound.into()).err_when("wrapping outbound socket")?;
+
+        let req_fut = forward_udp_requests(&inbound, &outbound);
+        let res_fut = forward_udp_responses(&inbound, &outbound);
+        tokio::try_join!(req_fut, res_fut).map(|_| ())
+    }
+
+    async fn forward_udp_requests(
+        inbound: &UdpSocket,
+        outbound: &UdpSocket,
+    ) -> Result<(), SocksServerError> {
+        let mut buf = vec![0u8; 8192];
+        let outbound_local = outbound.local_addr().err_when("udp outbound local addr")?;
+        let outbound_is_v6 = outbound_local.is_ipv6();
+
+        loop {
+            let (size, client_addr) = inbound
+                .recv_from(&mut buf)
+                .await
+                .err_when("udp receiving from")?;
+            inbound
+                .connect(client_addr)
+                .await
+                .err_when("connecting udp inbound")?;
+
+            let (frag, target_addr, data) = parse_udp_request(&buf[..size]).await?;
+            if frag != 0 {
+                tracing::trace!("discarding UDP fragment (frag={frag})");
+                continue;
+            }
+
+            let display_target = target_addr.to_string();
+            let resolved = target_addr.resolve_dns().await?;
+            let mut socket_addrs = resolved
+                .to_socket_addrs()
+                .err_when("udp target to socket addrs")?;
+            let mut destination = socket_addrs
+                .next()
+                .ok_or(SocksServerError::Bug("no socket addrs"))?;
+
+            if outbound_is_v6 {
+                destination.set_ip(match destination.ip() {
+                    IpAddr::V4(v4) => IpAddr::V6(v4.to_ipv6_mapped()),
+                    v6 @ IpAddr::V6(_) => v6,
+                });
+            }
+
+            let local_addr = outbound.local_addr().err_when("udp outbound local addr")?;
+
+            tracing::debug!(
+                "udp datagram {} → {} (remote {}, {} bytes)",
+                display_target,
+                local_addr,
+                destination,
+                data.len()
+            );
+
+            outbound
+                .send_to(data, destination)
+                .await
+                .err_when("udp sending to")?;
+        }
+    }
+
+    async fn forward_udp_responses(
+        inbound: &UdpSocket,
+        outbound: &UdpSocket,
+    ) -> Result<(), SocksServerError> {
+        let mut buf = vec![0u8; 8192];
+
+        loop {
+            let (size, mut remote_addr) = outbound
+                .recv_from(&mut buf)
+                .await
+                .err_when("udp receiving from")?;
+
+            if let IpAddr::V6(v6) = remote_addr.ip() {
+                if let Some(v4) = v6.to_ipv4_mapped() {
+                    remote_addr.set_ip(IpAddr::V4(v4));
+                }
+            }
+
+            tracing::trace!("udp response {} bytes from {}", size, remote_addr);
+
+            let mut response = new_udp_header(remote_addr)?;
+            response.extend_from_slice(&buf[..size]);
+
+            inbound.send(&response).await.err_when("udp sending")?;
         }
     }
 }
