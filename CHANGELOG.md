@@ -1,5 +1,8 @@
 # Changelog
 
+## v0.3.3
+- Refreshed documentation and crate metadata (README, keywords, description) with guidance on preparing IP pools for BGP-operated prefixes.
+
 ## v0.3.2
 - Added SOCKS5 UDP ASSOCIATE support so datagrams reuse the IP pool just like TCP connections.
 - Wrapped fast-socks5 UDP handling with a custom transfer that binds sockets via `socket2` and emits per-datagram tracing, improving observability.
