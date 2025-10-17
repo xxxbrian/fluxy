@@ -1,7 +1,10 @@
 use bytes::Bytes;
 use cidr::{Ipv4Cidr, Ipv6Cidr};
 use fast_socks5::{
-    server::{states, transfer, DnsResolveHelper as _, Socks5ServerProtocol, SocksServerError},
+    server::{
+        run_udp_proxy, states, transfer, DnsResolveHelper as _, Socks5ServerProtocol,
+        SocksServerError,
+    },
     ReplyError, Socks5Command,
 };
 use http_body_util::{Either, Empty};
@@ -103,6 +106,43 @@ impl OutboundConnector {
                 .as_ref()
                 .map(|_| SocketAddr::new(IpAddr::V6(self.get_rand_ipv6()), 0)),
         }
+    }
+
+    pub fn random_local_ip_for(&self, remote: IpAddr) -> io::Result<IpAddr> {
+        if let IpAddr::V4(ip) = remote {
+            if !ip.is_unspecified() {
+                if self.config.ipv4.is_some() {
+                    return Ok(IpAddr::V4(self.get_rand_ipv4()));
+                }
+            } else if let Some(_) = self.config.ipv4 {
+                return Ok(IpAddr::V4(self.get_rand_ipv4()));
+            }
+        }
+
+        if let IpAddr::V6(ip) = remote {
+            if !ip.is_unspecified() {
+                if self.config.ipv6.is_some() {
+                    return Ok(IpAddr::V6(self.get_rand_ipv6()));
+                }
+            } else if let Some(_) = self.config.ipv6 {
+                return Ok(IpAddr::V6(self.get_rand_ipv6()));
+            }
+        }
+
+        // fall back to whichever pool is available if remote is unspecified
+        if remote.is_unspecified() {
+            if let Some(_) = self.config.ipv4 {
+                return Ok(IpAddr::V4(self.get_rand_ipv4()));
+            }
+            if let Some(_) = self.config.ipv6 {
+                return Ok(IpAddr::V6(self.get_rand_ipv6()));
+            }
+        }
+
+        Err(io::Error::new(
+            ErrorKind::AddrNotAvailable,
+            "no available address family for destination",
+        ))
     }
 
     fn get_rand_ipv6(&self) -> Ipv6Addr {
@@ -367,6 +407,7 @@ mod socks {
         connector: OutboundConnector,
         stream: TcpStream,
     ) -> Result<(), SocksProxyError> {
+        let local_ip = stream.local_addr().ok().map(|addr| addr.ip());
         tracing::trace!("SOCKS5 handshake");
         let proto = Socks5ServerProtocol::accept_no_auth(stream).await?;
         let (proto, cmd, target_addr_unresolved) = proto.read_command().await?;
@@ -378,6 +419,10 @@ mod socks {
             Socks5Command::TCPConnect => {
                 tracing::debug!("CONNECT {}", original_target);
                 handle_tcp_connect(connector, proto, original_target, target_addr).await
+            }
+            Socks5Command::UDPAssociate => {
+                tracing::debug!("UDP ASSOCIATE {}", original_target);
+                handle_udp_associate(connector, proto, original_target, target_addr, local_ip).await
             }
             _ => {
                 tracing::debug!("unsupported command: {:?}", cmd);
@@ -433,6 +478,65 @@ mod socks {
 
         let mut inbound = proto.reply_success(local_addr).await?;
         transfer(&mut inbound, outbound).await;
+        Ok(())
+    }
+
+    async fn handle_udp_associate<T>(
+        connector: OutboundConnector,
+        proto: Socks5ServerProtocol<T, states::CommandRead>,
+        original_target: String,
+        target_addr: TargetAddr,
+        local_reply_ip: Option<IpAddr>,
+    ) -> Result<(), SocksProxyError>
+    where
+        T: AsyncRead + AsyncWrite + Unpin,
+    {
+        let reply_ip = match local_reply_ip {
+            Some(ip) => ip,
+            None => {
+                tracing::debug!("unable to determine local IP for UDP associate");
+                proto.reply_error(&ReplyError::GeneralFailure).await?;
+                return Ok(());
+            }
+        };
+
+        let destination = match target_addr {
+            TargetAddr::Ip(addr) => addr,
+            TargetAddr::Domain(_, _) => {
+                tracing::debug!("domain resolution not supported in SOCKS5 UDP");
+                proto.reply_error(&ReplyError::GeneralFailure).await?;
+                return Ok(());
+            }
+        };
+
+        let outbound_ip = match connector.random_local_ip_for(destination.ip()) {
+            Ok(ip) => ip,
+            Err(err) => {
+                tracing::debug!("UDP outbound bind selection failed: {}", err);
+                let reply = reply_error_for_io(&err);
+                proto.reply_error(&reply).await?;
+                return Err(err.into());
+            }
+        };
+
+        let resolved_target = TargetAddr::Ip(destination);
+
+        tracing::debug!(
+            "UDP associate {} → {} (relay {}, outbound {})",
+            original_target,
+            destination,
+            reply_ip,
+            outbound_ip
+        );
+
+        run_udp_proxy(
+            proto,
+            &resolved_target,
+            Some(reply_ip),
+            reply_ip,
+            Some(outbound_ip),
+        )
+        .await?;
         Ok(())
     }
 
