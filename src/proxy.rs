@@ -87,9 +87,7 @@ impl OutboundConnector {
             ));
         }
 
-        Err(last_err.unwrap_or_else(|| {
-            io::Error::new(ErrorKind::Other, "unable to connect to destination")
-        }))
+        Err(last_err.unwrap_or_else(|| io::Error::other("unable to connect to destination")))
     }
 
     fn get_rand_socket_addr_for(&self, remote: &SocketAddr) -> Option<SocketAddr> {
