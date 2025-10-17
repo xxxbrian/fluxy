@@ -18,6 +18,10 @@ bytes = "1"
 tokio = { version = "1", features = ["net", "rt-multi-thread", "macros", "io-util"] }
 fastrand = "2.3"
 fast-socks5 = "1.0.0-rc.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+nu-ansi-term = "0.50"
+chrono = "0.4"
 
 [profile.release]
 strip = "symbols"

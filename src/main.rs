@@ -1,4 +1,5 @@
 // main.rs
+mod logging;
 mod proxy;
 
 use cidr::{Ipv4Cidr, Ipv6Cidr};
@@ -32,7 +33,12 @@ fn main() {
     );
     opts.optflag("h", "help", "print this help menu");
     opts.optflag("v", "version", "print version information");
-    opts.optflag("", "verbose", "enable verbose logging");
+    opts.optopt(
+        "",
+        "log",
+        "log level: trace, debug, info, warn, error (default: info)",
+        "LEVEL",
+    );
     let matches = match opts.parse(&args[1..]) {
         Ok(m) => m,
         Err(f) => {
@@ -70,8 +76,8 @@ fn main() {
 
     let ipv6_subnet = matches.opt_str("6");
     let ipv4_subnet = matches.opt_str("4");
-    let verbose = matches.opt_present("verbose");
-    run(http_bind, socks_bind, ipv6_subnet, ipv4_subnet, verbose)
+    let log_level = matches.opt_str("log");
+    run(http_bind, socks_bind, ipv6_subnet, ipv4_subnet, log_level)
 }
 
 #[tokio::main]
@@ -80,25 +86,26 @@ async fn run(
     socks_bind: Option<String>,
     ipv6_subnet: Option<String>,
     ipv4_subnet: Option<String>,
-    verbose: bool,
+    log_level: Option<String>,
 ) {
+    // Initialize logging first
+    logging::init(log_level.as_deref());
+
     if http_bind.is_none() && socks_bind.is_none() {
-        eprintln!("No services enabled. Provide --http-bind/-H and/or --socks-bind/-S.");
+        tracing::error!("No services enabled. Provide --http-bind/-H and/or --socks-bind/-S.");
         return;
     }
 
-    let mut config = ProxyConfig {
-        verbose,
-        ..ProxyConfig::default()
-    };
+    let mut config = ProxyConfig::default();
 
     if let Some(subnet) = ipv6_subnet {
         match subnet.parse::<Ipv6Cidr>() {
             Ok(cidr) => {
                 config.ipv6 = Some(cidr);
+                tracing::info!("IPv6 subnet configured: {}", cidr);
             }
             Err(_) => {
-                println!("Invalid IPv6 subnet");
+                tracing::error!("Invalid IPv6 subnet");
                 exit(1);
             }
         }
@@ -108,9 +115,10 @@ async fn run(
         match subnet.parse::<Ipv4Cidr>() {
             Ok(cidr) => {
                 config.ipv4 = Some(cidr);
+                tracing::info!("IPv4 subnet configured: {}", cidr);
             }
             Err(_) => {
-                println!("Invalid IPv4 subnet");
+                tracing::error!("Invalid IPv4 subnet");
                 exit(1);
             }
         }
@@ -120,7 +128,7 @@ async fn run(
         Some(bind) => match bind.parse::<SocketAddr>() {
             Ok(addr) => Some(addr),
             Err(e) => {
-                println!("HTTP bind address not valid: {}", e);
+                tracing::error!("HTTP bind address not valid: {}", e);
                 return;
             }
         },
@@ -131,7 +139,7 @@ async fn run(
         Some(bind) => match bind.parse::<SocketAddr>() {
             Ok(addr) => Some(addr),
             Err(e) => {
-                println!("SOCKS bind address not valid: {}", e);
+                tracing::error!("SOCKS bind address not valid: {}", e);
                 return;
             }
         },
@@ -160,17 +168,17 @@ async fn run(
             };
 
             if let Err(err) = tokio::try_join!(http_future, socks_future) {
-                eprintln!("{err}");
+                tracing::error!("Proxy error: {err}");
             }
         }
         (Some(http_addr), None) => {
             if let Err(err) = start_http_proxy(http_addr, connector).await {
-                eprintln!("{err}");
+                tracing::error!("HTTP proxy error: {err}");
             }
         }
         (None, Some(socks_addr)) => {
             if let Err(err) = start_socks_proxy(socks_addr, connector).await {
-                eprintln!("{err}");
+                tracing::error!("SOCKS proxy error: {err}");
             }
         }
         (None, None) => unreachable!(),

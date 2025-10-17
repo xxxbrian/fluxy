@@ -20,12 +20,12 @@ use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::{TcpListener, TcpSocket, TcpStream},
 };
+use tracing::Instrument;
 
 #[derive(Clone, Default)]
 pub struct ProxyConfig {
     pub ipv6: Option<Ipv6Cidr>,
     pub ipv4: Option<Ipv4Cidr>,
-    pub verbose: bool,
 }
 
 #[derive(Clone)]
@@ -36,12 +36,6 @@ pub struct OutboundConnector {
 impl OutboundConnector {
     pub fn new(config: ProxyConfig) -> Self {
         Self { config }
-    }
-
-    pub fn log_verbose(&self, message: &str) {
-        if self.config.verbose {
-            eprintln!("{message}");
-        }
     }
 
     pub async fn connect_host(&self, host: &str, port: u16) -> io::Result<TcpStream> {
@@ -150,6 +144,7 @@ mod http {
         connector: OutboundConnector,
     ) -> io::Result<()> {
         let listener = TcpListener::bind(listen_addr).await?;
+        tracing::info!("HTTP proxy listening on {}", listen_addr);
 
         loop {
             let (stream, _) = listener.accept().await?;
@@ -172,7 +167,7 @@ mod http {
                     .with_upgrades()
                     .await
                 {
-                    handler.log_verbose(&format!("connection error: {err}"));
+                    tracing::debug!("HTTP connection error: {}", err);
                 }
             });
         }
@@ -185,10 +180,14 @@ mod http {
 
     impl HttpProxy {
         async fn proxy(self, req: Request<Incoming>) -> ProxyResult<Response<ProxyBody>> {
+            let conn_id = crate::logging::new_conn_id();
+
             if req.method() == Method::CONNECT {
-                self.process_connect(req).await
+                let span = tracing::debug_span!("http_connect", conn_id = %conn_id);
+                self.process_connect(req).instrument(span).await
             } else {
-                self.process_request(req).await
+                let span = tracing::debug_span!("http_request", conn_id = %conn_id);
+                self.process_request(req).instrument(span).await
             }
         }
 
@@ -196,11 +195,14 @@ mod http {
             let remote_addr = match req.uri().authority().map(|auth| auth.to_string()) {
                 Some(addr) => addr,
                 None => {
+                    tracing::debug!("invalid CONNECT request");
                     let mut response = Response::new(Either::Left(Empty::<Bytes>::new()));
                     *response.status_mut() = StatusCode::BAD_REQUEST;
                     return Ok(response);
                 }
             };
+
+            tracing::debug!("CONNECT {}", remote_addr);
 
             tokio::task::spawn(async move {
                 let proxy = self;
@@ -208,10 +210,10 @@ mod http {
                     Ok(upgraded) => {
                         let mut upgraded = TokioIo::new(upgraded);
                         if let Err(err) = proxy.tunnel(&mut upgraded, remote_addr).await {
-                            proxy.log_verbose(&format!("tunnel error: {err}"));
+                            tracing::debug!("tunnel error: {}", err);
                         }
                     }
-                    Err(err) => proxy.log_verbose(&format!("upgrade error: {err}")),
+                    Err(err) => tracing::debug!("upgrade error: {}", err),
                 }
             });
             Ok(Response::new(Either::Left(Empty::<Bytes>::new())))
@@ -231,11 +233,19 @@ mod http {
                     _ => 80,
                 });
 
+            tracing::trace!("resolving {}:{}", host, port);
             let stream = self.connector.connect_host(&host, port).await?;
-            if let Ok(addr) = stream.local_addr() {
-                self.log_verbose(&format!("{} via {}", host, addr.ip()));
+
+            if let (Ok(local_addr), Ok(peer_addr)) = (stream.local_addr(), stream.peer_addr()) {
+                if host.parse::<IpAddr>().is_ok() {
+                    tracing::debug!("{} → {}", host, local_addr.ip());
+                } else {
+                    tracing::debug!("{} ({}) → {}", host, peer_addr.ip(), local_addr.ip());
+                }
+            } else if let Ok(local_addr) = stream.local_addr() {
+                tracing::debug!("{} → {}", host, local_addr.ip());
             } else {
-                self.log_verbose(&format!("{host} via <unknown>"));
+                tracing::debug!("{} → <unknown>", host);
             }
 
             let io = TokioIo::new(stream);
@@ -245,10 +255,9 @@ mod http {
                 .handshake(io)
                 .await?;
 
-            let proxy_clone = self.clone();
             tokio::task::spawn(async move {
                 if let Err(err) = connection.without_shutdown().await {
-                    proxy_clone.log_verbose(&format!("upstream connection error: {err}"));
+                    tracing::debug!("upstream error: {}", err);
                 }
             });
 
@@ -261,25 +270,23 @@ mod http {
         where
             A: AsyncRead + AsyncWrite + Unpin + ?Sized,
         {
+            tracing::trace!("DNS resolving {}", addr_str);
             if let Ok(addrs) = addr_str.to_socket_addrs() {
                 for addr in addrs {
+                    tracing::trace!("trying {}", addr);
                     if let Ok(mut server) = self.connector.connect_addr(addr).await {
                         if let Ok(local) = server.local_addr() {
-                            self.log_verbose(&format!("{addr_str} via {}", local.ip()));
+                            tracing::debug!("{} → {}", addr_str, local.ip());
                         }
                         tokio::io::copy_bidirectional(upgraded, &mut server).await?;
                         return Ok(());
                     }
                 }
             } else {
-                self.log_verbose(&format!("error: {addr_str}"));
+                tracing::debug!("DNS resolution failed: {}", addr_str);
             }
 
             Ok(())
-        }
-
-        fn log_verbose(&self, message: &str) {
-            self.connector.log_verbose(message);
         }
     }
 
@@ -338,16 +345,22 @@ mod socks {
         connector: OutboundConnector,
     ) -> io::Result<()> {
         let listener = TcpListener::bind(listen_addr).await?;
+        tracing::info!("SOCKS5 proxy listening on {}", listen_addr);
 
         loop {
             let (stream, _) = listener.accept().await?;
             let connector_for_task = connector.clone();
 
-            tokio::task::spawn(async move {
-                let logger = connector_for_task.clone();
-                if let Err(err) = handle_connection(connector_for_task, stream).await {
-                    logger.log_verbose(&format!("socks error: {err}"));
+            tokio::task::spawn({
+                let conn_id = crate::logging::new_conn_id();
+                let span = tracing::debug_span!("socks", conn_id = %conn_id);
+
+                async move {
+                    if let Err(err) = handle_connection(connector_for_task, stream).await {
+                        tracing::debug!("SOCKS5 error: {}", err);
+                    }
                 }
+                .instrument(span)
             });
         }
     }
@@ -356,12 +369,20 @@ mod socks {
         connector: OutboundConnector,
         stream: TcpStream,
     ) -> Result<(), SocksProxyError> {
+        tracing::trace!("SOCKS5 handshake");
         let proto = Socks5ServerProtocol::accept_no_auth(stream).await?;
-        let (proto, cmd, target_addr) = proto.read_command().await?.resolve_dns().await?;
+        let (proto, cmd, target_addr_unresolved) = proto.read_command().await?;
+
+        let original_target = target_addr_unresolved.to_string();
+        let (proto, cmd, target_addr) = (proto, cmd, target_addr_unresolved).resolve_dns().await?;
 
         match cmd {
-            Socks5Command::TCPConnect => handle_tcp_connect(connector, proto, target_addr).await,
+            Socks5Command::TCPConnect => {
+                tracing::debug!("CONNECT {}", original_target);
+                handle_tcp_connect(connector, proto, original_target, target_addr).await
+            }
             _ => {
+                tracing::debug!("unsupported command: {:?}", cmd);
                 proto.reply_error(&ReplyError::CommandNotSupported).await?;
                 Ok(())
             }
@@ -371,23 +392,26 @@ mod socks {
     async fn handle_tcp_connect<T>(
         connector: OutboundConnector,
         proto: Socks5ServerProtocol<T, states::CommandRead>,
+        original_target: String,
         target_addr: TargetAddr,
     ) -> Result<(), SocksProxyError>
     where
         T: AsyncRead + AsyncWrite + Unpin,
     {
-        let target_display = target_addr.to_string();
         let destination = match target_addr {
             TargetAddr::Ip(addr) => addr,
             TargetAddr::Domain(_, _) => {
+                tracing::debug!("domain resolution not supported in SOCKS5");
                 proto.reply_error(&ReplyError::GeneralFailure).await?;
                 return Ok(());
             }
         };
 
+        tracing::trace!("connecting to {}", destination);
         let outbound = match connector.connect_addr(destination).await {
             Ok(stream) => stream,
             Err(err) => {
+                tracing::debug!("connection failed: {}", err);
                 let reply = reply_error_for_io(&err);
                 proto.reply_error(&reply).await?;
                 return Err(err.into());
@@ -396,11 +420,15 @@ mod socks {
 
         let local_addr = match outbound.local_addr() {
             Ok(addr) => {
-                connector.log_verbose(&format!("{target_display} via {}", addr.ip()));
+                if original_target.contains(&destination.ip().to_string()) {
+                    tracing::debug!("{} → {}", destination.ip(), addr.ip());
+                } else {
+                    tracing::debug!("{} ({}) → {}", original_target, destination.ip(), addr.ip());
+                }
                 addr
             }
             Err(_) => {
-                connector.log_verbose(&format!("{target_display} via <unknown>"));
+                tracing::debug!("{} → <unknown>", original_target);
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)
             }
         };
