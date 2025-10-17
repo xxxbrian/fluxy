@@ -27,7 +27,7 @@ Display the help menu.
 `-v, --version`
 Print the current build version.
 
-`--verbose`
-Print basic per-request diagnostics. Disabled by default.
+`--log LEVEL`
+Set the logging level: `trace`, `debug`, `info`, `warn`, `error` (default: `info`).
 
 At least one of `--http-bind`/`-H` or `--socks-bind`/`-S` must be provided.
