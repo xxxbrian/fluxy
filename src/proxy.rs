@@ -111,32 +111,33 @@ impl OutboundConnector {
     }
 
     pub fn random_local_ip_for(&self, remote: IpAddr) -> io::Result<IpAddr> {
-        if let IpAddr::V4(ip) = remote {
-            if !ip.is_unspecified() {
-                if self.config.ipv4.is_some() {
+        let ipv4_available = self.config.ipv4.is_some();
+        let ipv6_available = self.config.ipv6.is_some();
+
+        match remote {
+            IpAddr::V4(ip) => {
+                if ipv4_available {
                     return Ok(IpAddr::V4(self.get_rand_ipv4()));
                 }
-            } else if let Some(_) = self.config.ipv4 {
-                return Ok(IpAddr::V4(self.get_rand_ipv4()));
-            }
-        }
-
-        if let IpAddr::V6(ip) = remote {
-            if !ip.is_unspecified() {
-                if self.config.ipv6.is_some() {
+                if ip.is_unspecified() && ipv6_available {
                     return Ok(IpAddr::V6(self.get_rand_ipv6()));
                 }
-            } else if let Some(_) = self.config.ipv6 {
-                return Ok(IpAddr::V6(self.get_rand_ipv6()));
+            }
+            IpAddr::V6(ip) => {
+                if ipv6_available {
+                    return Ok(IpAddr::V6(self.get_rand_ipv6()));
+                }
+                if ip.is_unspecified() && ipv4_available {
+                    return Ok(IpAddr::V4(self.get_rand_ipv4()));
+                }
             }
         }
 
-        // fall back to whichever pool is available if remote is unspecified
         if remote.is_unspecified() {
-            if let Some(_) = self.config.ipv4 {
+            if ipv4_available {
                 return Ok(IpAddr::V4(self.get_rand_ipv4()));
             }
-            if let Some(_) = self.config.ipv6 {
+            if ipv6_available {
                 return Ok(IpAddr::V6(self.get_rand_ipv6()));
             }
         }
